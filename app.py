@@ -1,0 +1,263 @@
+import streamlit as st
+import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
+import folium
+from streamlit_folium import st_folium
+from folium.plugins import MarkerCluster
+from geopy.geocoders import Nominatim
+import time
+
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Mapa de Clientes - Fusion", layout="wide", initial_sidebar_state="expanded")
+
+# --- CONEXIÓN CON GOOGLE SHEETS (VERSIÓN CLOUD) ---
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+def get_gspread_client():
+    # Lee las credenciales desde los secrets de Streamlit (más seguro para la nube)
+    creds_dict = st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    client = gspread.authorize(creds)
+    return client
+
+# IMPORTANTE: Poné acá el nombre exacto de tu archivo de Google Sheets
+NOMBRE_DOCUMENTO = "Fusion Reclamos App.xlsx" 
+
+# --- FUNCIONES DE DATOS (CON CACHÉ - DETALLE A) ---
+@st.cache_data(ttl=600) # Cachea los datos por 10 minutos
+def cargar_datos():
+    try:
+        CLIENT = get_gspread_client()
+        doc = CLIENT.open(NOMBRE_DOCUMENTO)
+        
+        # Cargar hojas
+        ws_clientes = doc.worksheet("Clientes")
+        ws_reclamos = doc.worksheet("Reclamos")
+        ws_usuarios = doc.worksheet("usuarios") # Ojo con las mayúsculas en la hoja
+        
+        df_clientes = pd.DataFrame(ws_clientes.get_all_records())
+        df_reclamos = pd.DataFrame(ws_reclamos.get_all_records())
+        df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+        
+        return df_clientes, df_reclamos, df_usuarios, ws_clientes
+    except Exception as e:
+        st.error(f"Error al conectar con Google Sheets: {e}")
+        return None, None, None, None
+
+# Función para limpiar y preparar los datos
+def procesar_datos(df_clientes, df_reclamos):
+    # Renombrar columnas según lo acordado (A-K)
+    rename_dict = {
+        'Nº de cliente': 'id_cliente',
+        'Sector': 'sector',
+        'Nombre': 'nombre',
+        'Direccion': 'direccion',
+        'Telefono': 'telefono',
+        'Nº de Precinto': 'precinto',
+        'Latitud': 'lat',
+        'Longitud': 'lon'
+    }
+    df = df_clientes.rename(columns=rename_dict)
+
+    # Asegurar que id_cliente sea string para buscar bien
+    df['id_cliente'] = df['id_cliente'].astype(str)
+
+    # Limpiar coordenadas: reemplazar '*', vacíos y convertir a numérico
+    df['lat'] = df['lat'].replace(['*', '', ' '], None)
+    df['lon'] = df['lon'].replace(['*', '', ' '], None)
+    df['lat'] = pd.to_numeric(df['lat'].astype(str).str.replace(',', '.'), errors='coerce')
+    df['lon'] = pd.to_numeric(df['lon'].astype(str).str.replace(',', '.'), errors='coerce')
+
+    # Filtrar los que tienen coordenadas para el mapa
+    df_mapa = df.dropna(subset=['lat', 'lon']).copy()
+
+    # Lógica de colores (Idea 4) - Reclamos Activos
+    df_reclamos['Nº Cliente'] = df_reclamos['Nº Cliente'].astype(str)
+    reclamos_activos = df_reclamos[df_reclamos['Estado'] != 'Resuelto']['Nº Cliente'].unique()
+    
+    # Asignar color: Rojo si tiene reclamo activo, Verde si no
+    df_mapa['color'] = df_mapa['id_cliente'].apply(
+        lambda x: 'red' if x in reclamos_activos else 'green'
+    )
+
+    return df, df_mapa
+
+# --- SISTEMA DE LOGIN ---
+def login_screen():
+    st.title("🔒 Acceso a Plataforma Fusion")
+    st.write("Ingresá tus credenciales para acceder al mapa de clientes.")
+    
+    with st.form("login_form"):
+        username = st.text_input("Usuario")
+        password = st.text_input("Contraseña", type="password")
+        submit = st.form_submit_button("Ingresar")
+        
+        if submit:
+            df_clientes, df_reclamos, df_usuarios, ws_clientes = cargar_datos()
+            if df_usuarios is not None:
+                # Buscar usuario
+                user_row = df_usuarios[(df_usuarios['username'] == username) & (df_usuarios['password'] == password)]
+                if not user_row.empty:
+                    nombre_usuario = user_row.iloc[0]['nombre']
+                    st.session_state["authenticated"] = True
+                    st.session_state["user_name"] = nombre_usuario
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
+
+# --- APLICACIÓN PRINCIPAL ---
+def main_app():
+    st.title("🗺️ Mapa Interactivo de Clientes - Fusion")
+    
+    # Botón para limpiar caché y cerrar sesión en sidebar
+    with st.sidebar:
+        st.write(f"👤 **{st.session_state.user_name}**")
+        if st.button("🔄 Actualizar datos"):
+            st.cache_data.clear()
+            st.rerun()
+        if st.button("🚪 Cerrar sesión"):
+            st.session_state.authenticated = False
+            st.rerun()
+        st.divider()
+
+    # Cargar datos
+    df_clientes_raw, df_reclamos_raw, df_usuarios, ws_clientes = cargar_datos()
+
+    if df_clientes_raw is not None:
+        df_completo, df_mapa = procesar_datos(df_clientes_raw, df_reclamos_raw)
+        
+        # --- SIDEBAR (Filtros - Idea 5) ---
+        st.sidebar.header("Filtros y Búsqueda")
+        
+        # Filtro por sector
+        sectores_disponibles = sorted(df_completo['sector'].dropna().unique().tolist())
+        sector_seleccionado = st.sidebar.selectbox("Filtrar por Sector", ["Todos"] + sectores_disponibles)
+        
+        # Buscador por Nº de Cliente
+        id_busqueda = st.sidebar.text_input("🔍 Buscar Nº de Cliente")
+        
+        # Lógica de filtrado
+        df_filtrado = df_mapa.copy()
+        
+        # Aplicar filtro de sector
+        if sector_seleccionado != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['sector'] == sector_seleccionado]
+            
+        # Aplicar búsqueda específica
+        cliente_encontrado = None
+        mensaje_estado = ""
+        
+        if id_busqueda:
+            resultado_busqueda = df_completo[df_completo['id_cliente'] == id_busqueda]
+            
+            if resultado_busqueda.empty:
+                mensaje_estado = "⚠️ El cliente no existe en la base de datos."
+                df_filtrado = pd.DataFrame() 
+            else:
+                cliente_encontrado = resultado_busqueda.iloc[0]
+                if pd.isna(cliente_encontrado['lat']) or pd.isna(cliente_encontrado['lon']):
+                    mensaje_estado = "📍 El cliente existe, pero **NO tiene coordenadas** registradas."
+                    df_filtrado = pd.DataFrame() 
+                else:
+                    mensaje_estado = "✅ Cliente encontrado y centrado en el mapa."
+                    df_filtrado = resultado_busqueda[resultado_busqueda['lat'].notna()] 
+
+        if mensaje_estado:
+            st.sidebar.info(mensaje_estado)
+            
+        # --- ASISTENTE DE GEOLOCALIZACIÓN (Idea 6) ---
+        if id_busqueda and cliente_encontrado is not None and (pd.isna(cliente_encontrado['lat']) or pd.isna(cliente_encontrado['lon'])):
+            st.sidebar.markdown("### 🛠️ Asistente de Ubicación")
+            direccion_actual = cliente_encontrado['direccion']
+            dir_input = st.sidebar.text_input("Ingresá la dirección para buscar coordenadas:", value=str(direccion_actual))
+            
+            if st.sidebar.button("Buscar Coordenadas"):
+                with st.sidebar.spinner("Buscando ubicación..."):
+                    try:
+                        geolocator = Nominatim(user_agent="fusion_map_app")
+                        location = geolocator.geocode(f"{dir_input}, Chaco, Argentina") 
+                        if location:
+                            st.sidebar.success(f"¡Encontrado! Lat: {location.latitude:.6f}, Lon: {location.longitude:.6f}")
+                            # Guardamos en session state para el botón de confirmación
+                            st.session_state.found_lat = location.latitude
+                            st.session_state.found_lon = location.longitude
+                            st.session_state.found_id = id_busqueda
+                        else:
+                            st.sidebar.error("No se encontraron coordenadas para esa dirección. Probá con otra.")
+                    except Exception as e:
+                        st.sidebar.error(f"Error en la búsqueda: {e}")
+
+            # Botón para guardar en Sheets
+            if 'found_lat' in st.session_state and st.session_state.get('found_id') == id_busqueda:
+                if st.sidebar.button("💾 Guardar en Google Sheets"):
+                    with st.sidebar.spinner("Guardando..."):
+                        try:
+                            cell = ws_clientes.find(st.session_state.found_id)
+                            if cell:
+                                fila = cell.row
+                                # Columna J = 10, Columna K = 11
+                                ws_clientes.update_cell(fila, 10, st.session_state.found_lat)
+                                ws_clientes.update_cell(fila, 11, st.session_state.found_lon)
+                                st.sidebar.success("¡Guardado! Hacé clic en 'Actualizar datos'.")
+                                st.cache_data.clear() 
+                                del st.session_state.found_lat
+                            else:
+                                st.sidebar.error("No se encontró la fila en Sheets.")
+                        except Exception as e:
+                            st.sidebar.error(f"Error al guardar: {e}")
+
+        # --- MAPA PRINCIPAL ---
+        if not df_filtrado.empty:
+            # Calcular centro del mapa
+            if id_busqueda and not df_filtrado.empty:
+                centro = [df_filtrado.iloc[0]['lat'], df_filtrado.iloc[0]['lon']]
+                zoom = 16
+            else:
+                centro = [-27.45, -58.98] # Resistencia, Chaco
+                zoom = 12
+                
+            m = folium.Map(location=centro, zoom_start=zoom)
+            marker_cluster = MarkerCluster(name="Clientes").add_to(m)
+
+            for idx, row in df_filtrado.iterrows():
+                html_popup = f"""
+                <div style="font-family: Arial; min-width: 200px;">
+                    <h4 style="margin:0 0 5px 0;">{row['nombre']}</h4>
+                    <b>Cliente:</b> {row['id_cliente']}<br>
+                    <b>Dirección:</b> {row['direccion']}<br>
+                    <b>Teléfono:</b> {row['telefono']}<br>
+                    <b>Precinto:</b> {row['precinto']}<br>
+                </div>
+                """
+                
+                color_pin = row['color']
+                folium.Marker(
+                    location=[row['lat'], row['lon']],
+                    popup=folium.Popup(html_popup, max_width=300),
+                    tooltip=f"{row['nombre']} ({row['id_cliente']})",
+                    icon=folium.Icon(color=color_pin, icon='user', prefix='fa')
+                ).add_to(marker_cluster)
+            
+            st_folium(m, width=1200, height=700)
+            
+            st.markdown("### Leyenda del Mapa")
+            st.markdown("🟢 **Verde:** Sin reclamos activos &nbsp;&nbsp; 🔴 **Rojo:** Reclamo Pendiente/En proceso")
+            
+        else:
+            if not id_busqueda:
+                st.warning("No hay clientes con coordenadas para el filtro seleccionado.")
+            elif id_busqueda and cliente_encontrado is not None and (pd.isna(cliente_encontrado['lat']) or pd.isna(cliente_encontrado['lon'])):
+                st.info("ℹ️ Este cliente no se muestra en el mapa porque no tiene coordenadas. Usá el asistente en el menú de la izquierda.")
+
+# --- FLUJO DE EJECUCIÓN ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if st.session_state.authenticated:
+    main_app()
+else:
+    login_screen()
