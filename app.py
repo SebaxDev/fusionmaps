@@ -13,7 +13,6 @@ st.set_page_config(page_title="Mapa de Clientes - Fusion", layout="wide", initia
 # ==========================================
 # CONFIGURACIÓN DE CONEXIÓN (USAR SHEET_ID)
 # ==========================================
-# PEGÁ ACÁ EL ID DE TU HOJA DE GOOGLE (El código largo de la URL)
 SHEET_ID = "13R_3Mdr25Jd-nGhK7CxdcbKkFWLc0LPdYrOLOY8sZJo"
 
 # Nombres de las pestañas exactos dentro del archivo
@@ -36,7 +35,6 @@ def init_google_sheets():
         )
         client = gspread.authorize(creds)
         
-        # Conexión usando el ID (El método más seguro y rápido)
         ws_clientes = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_CLIENTES)
         ws_reclamos = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_RECLAMOS)
         ws_usuarios = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_USUARIOS)
@@ -51,29 +49,32 @@ def init_google_sheets():
 def cargar_datos():
     ws_clientes, ws_reclamos, ws_usuarios = init_google_sheets()
     
-    # Obtener datos
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_reclamos = pd.DataFrame(ws_reclamos.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
     
-    # Renombrar columnas para trabajar más fácil (A-K)
+    # Renombrar columnas EXACTAMENTE como están en tu hoja (A-K)
     rename_dict = {
-        'Nº de cliente': 'id_cliente',
-        'Sector': 'sector',
-        'Nombre': 'nombre',
-        'Direccion': 'direccion',
-        'Telefono': 'telefono',
-        'Nº de Precinto': 'precinto',
-        'Latitud': 'lat',
-        'Longitud': 'lon'
+        'Nº Cliente': 'nro_cliente',      # Columna A (El número familiar)
+        'Sector': 'sector',                # Columna B
+        'Nombre': 'nombre',                # Columna C
+        'Dirección': 'direccion',          # Columna D
+        'Teléfono': 'telefono',            # Columna E
+        'N° de Precinto': 'precinto',      # Columna F (Ojo con el ° vs º)
+        'ID Cliente': 'id_cliente',        # Columna G (El hash aleatorio)
+        'Última Modificación': 'ult_mod',  # Columna H
+        'Anotaciones': 'anotaciones',      # Columna I
+        'Latitud': 'lat',                  # Columna J
+        'Longitud': 'lon'                  # Columna K
     }
     
-    # Verificar si las columnas existen antes de renombrar para evitar errores
     existing_cols = {k: v for k, v in rename_dict.items() if k in df_clientes.columns}
     df_c = df_clientes.rename(columns=existing_cols)
     
+    # Asegurar que el Nº Cliente sea string para buscarlo bien
+    df_c['nro_cliente'] = df_c['nro_cliente'].astype(str)
+    
     # Limpiar coordenadas
-    df_c['id_cliente'] = df_c['id_cliente'].astype(str)
     df_c['lat'] = df_c['lat'].replace(['*', '', ' '], None)
     df_c['lon'] = df_c['lon'].replace(['*', '', ' '], None)
     df_c['lat'] = pd.to_numeric(df_c['lat'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -82,12 +83,12 @@ def cargar_datos():
     # Filtrar clientes con coordenadas válidas para el mapa
     df_mapa = df_c.dropna(subset=['lat', 'lon']).copy()
 
-    # Lógica de colores: Rojo si tiene reclamo activo, Verde si no
-    # Aseguramos que Nº Cliente sea string para comparar
+    # Lógica de colores: Cruzamos con la hoja Reclamos usando Nº Cliente
     df_reclamos['Nº Cliente'] = df_reclamos['Nº Cliente'].astype(str)
     reclamos_activos = df_reclamos[df_reclamos['Estado'] != 'Resuelto']['Nº Cliente'].unique()
     
-    df_mapa['color'] = df_mapa['id_cliente'].apply(
+    # Si el Nº Cliente está en reclamos activos -> Rojo, sino -> Verde
+    df_mapa['color'] = df_mapa['nro_cliente'].apply(
         lambda x: 'red' if x in reclamos_activos else 'green'
     )
 
@@ -120,7 +121,6 @@ def login_screen():
 def main_app():
     st.title("🗺️ Mapa Interactivo de Clientes - Fusion")
     
-    # Sidebar
     with st.sidebar:
         st.write(f"👤 **{st.session_state.user_name}**")
         if st.button("🔄 Actualizar datos"):
@@ -137,20 +137,17 @@ def main_app():
         st.error(f"Error al cargar los datos: {e}")
         st.stop()
 
-    # Obtener la hoja de clientes para actualizar coordenadas (Idea 6)
     ws_clientes, _, _ = init_google_sheets()
     
     # --- SIDEBAR Filtros ---
     st.sidebar.header("Filtros y Búsqueda")
     
-    # Filtro por sector
     sectores_disponibles = sorted(df_completo['sector'].dropna().unique().tolist())
     sector_seleccionado = st.sidebar.selectbox("Filtrar por Sector", ["Todos"] + sectores_disponibles)
     
-    # Buscador por Nº de Cliente
+    # Buscador por Nº de Cliente (El número familiar)
     id_busqueda = st.sidebar.text_input("🔍 Buscar Nº de Cliente")
     
-    # Lógica de filtrado
     df_filtrado = df_mapa.copy()
     
     if sector_seleccionado != "Todos":
@@ -160,7 +157,8 @@ def main_app():
     mensaje_estado = ""
     
     if id_busqueda:
-        resultado_busqueda = df_completo[df_completo['id_cliente'] == id_busqueda]
+        # Buscamos usando la columna renombrada 'nro_cliente'
+        resultado_busqueda = df_completo[df_completo['nro_cliente'] == id_busqueda]
         
         if resultado_busqueda.empty:
             mensaje_estado = "⚠️ El cliente no existe en la base de datos."
@@ -202,6 +200,7 @@ def main_app():
             if st.sidebar.button("💾 Guardar en Google Sheets"):
                 with st.sidebar.spinner("Guardando..."):
                     try:
+                        # Busca el Nº Cliente en la hoja para saber en qué fila guardarlo
                         cell = ws_clientes.find(st.session_state.found_id)
                         if cell:
                             fila = cell.row
@@ -220,7 +219,6 @@ def main_app():
 
     # --- MAPA PRINCIPAL ---
     if not df_filtrado.empty:
-        # Calcular centro del mapa
         if id_busqueda and not df_filtrado.empty:
             centro = [df_filtrado.iloc[0]['lat'], df_filtrado.iloc[0]['lon']]
             zoom = 16
@@ -235,7 +233,7 @@ def main_app():
             html_popup = f"""
             <div style="font-family: Arial; min-width: 200px;">
                 <h4 style="margin:0 0 5px 0;">{row['nombre']}</h4>
-                <b>Cliente:</b> {row['id_cliente']}<br>
+                <b>Nº Cliente:</b> {row['nro_cliente']}<br>
                 <b>Dirección:</b> {row['direccion']}<br>
                 <b>Teléfono:</b> {row['telefono']}<br>
                 <b>Precinto:</b> {row['precinto']}<br>
@@ -246,7 +244,7 @@ def main_app():
             folium.Marker(
                 location=[row['lat'], row['lon']],
                 popup=folium.Popup(html_popup, max_width=300),
-                tooltip=f"{row['nombre']} ({row['id_cliente']})",
+                tooltip=f"{row['nombre']} (Nº {row['nro_cliente']})",
                 icon=folium.Icon(color=color_pin, icon='user', prefix='fa')
             ).add_to(marker_cluster)
         
