@@ -91,7 +91,7 @@ def cargar_datos():
     df_reclamos['Nº Cliente'] = df_reclamos['Nº Cliente'].astype(str)
     
     # Filtrar SOLO "En Curso" y "Pendiente"
-    estados_activos = ['En Curso', 'Pendiente']
+    estados_activos = ['En curso', 'Pendiente']
     mascara_reclamos = df_reclamos['Estado'].isin(estados_activos)
     
     reclamos_activos = df_reclamos[mascara_reclamos]['Nº Cliente'].unique()
