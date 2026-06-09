@@ -10,6 +10,18 @@ from geopy.geocoders import Nominatim
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Mapa de Clientes - Fusion", layout="wide", initial_sidebar_state="expanded")
 
+# Quitar márgenes laterales para mapa más ancho
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 1rem;
+            padding-bottom: 0rem;
+            padding-left: 2rem;
+            padding-right: 2rem;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
 # ==========================================
 # CONFIGURACIÓN DE CONEXIÓN Y UBICACIÓN BASE
 # ==========================================
@@ -22,7 +34,7 @@ WORKSHEET_USUARIOS = "usuarios"
 # 📍 UBICACIÓN DE TU OFICINA
 OFICINA_LAT = -26.538165
 OFICINA_LON = -59.341487
-ZOOM_INICIAL = 15  # Zoom de cerca (nivel de calles)
+ZOOM_INICIAL = 15  
 
 # --- CONEXIÓN CON GOOGLE SHEETS ---
 SCOPES = [
@@ -77,13 +89,25 @@ def cargar_datos():
     df_mapa = df_c.dropna(subset=['lat', 'lon']).copy()
 
     df_reclamos['Nº Cliente'] = df_reclamos['Nº Cliente'].astype(str)
-    reclamos_activos = df_reclamos[df_reclamos['Estado'] != 'Resuelto']['Nº Cliente'].unique()
+    
+    # ========================================================
+    # MEJORA: Filtrar SOLO "En Curso" y "Pendiente"
+    # ========================================================
+    estados_activos = ['En Curso', 'Pendiente']
+    mascara_reclamos = df_reclamos['Estado'].isin(estados_activos)
+    
+    # Lista de Nº Clientes que tienen reclamos activos (para pintar de rojo)
+    reclamos_activos = df_reclamos[mascara_reclamos]['Nº Cliente'].unique()
+    
+    # Cantidad TOTAL de reclamos reales (no cantidad de clientes)
+    total_reclamos_activos = df_reclamos[mascara_reclamos].shape[0]
     
     df_mapa['color'] = df_mapa['nro_cliente'].apply(
         lambda x: 'red' if x in reclamos_activos else 'green'
     )
 
-    return df_c, df_mapa, df_usuarios, df_reclamos, reclamos_activos
+    # Devolvemos las nuevas variables
+    return df_c, df_mapa, df_usuarios, df_reclamos, reclamos_activos, total_reclamos_activos
 
 # --- SISTEMA DE LOGIN ---
 def login_screen():
@@ -97,7 +121,7 @@ def login_screen():
         
         if submit:
             try:
-                _, _, df_usuarios, _, _ = cargar_datos()
+                _, _, df_usuarios, _, _, _ = cargar_datos()
                 user_row = df_usuarios[(df_usuarios['username'] == username) & (df_usuarios['password'] == password)]
                 if not user_row.empty:
                     st.session_state["authenticated"] = True
@@ -109,14 +133,13 @@ def login_screen():
                 st.error(f"Error al cargar datos de usuarios: {e}")
 
 # --- ESTADÍSTICAS (Punto 2.2) ---
-def mostrar_estadisticas(df_completo, df_mapa, reclamos_activos):
+def mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos):
     st.markdown("### 📊 Resumen General")
     col1, col2, col3, col4 = st.columns(4)
     
     total_clientes = len(df_completo)
     con_coords = len(df_mapa)
     sin_coords = total_clientes - con_coords
-    total_reclamos = len(reclamos_activos)
     
     with col1:
         st.metric("👥 Total Clientes", total_clientes)
@@ -125,7 +148,8 @@ def mostrar_estadisticas(df_completo, df_mapa, reclamos_activos):
     with col3:
         st.metric("❌ Sin Coordenadas", sin_coords, delta=f"{sin_coords} pendientes", delta_color="inverse")
     with col4:
-        st.metric("🔴 Reclamos Activos", total_reclamos, delta=None if total_reclamos == 0 else "Requiere atención", delta_color="inverse")
+        # Ahora muestra la cantidad exacta de reclamos En Curso / Pendientes
+        st.metric("🔴 Reclamos Activos", total_reclamos_activos, delta="En Curso / Pendiente", delta_color="inverse")
     st.divider()
 
 # --- APLICACIÓN PRINCIPAL ---
@@ -143,7 +167,7 @@ def main_app():
         st.divider()
 
     try:
-        df_completo, df_mapa, _, df_reclamos, reclamos_activos = cargar_datos()
+        df_completo, df_mapa, _, df_reclamos, reclamos_activos, total_reclamos_activos = cargar_datos()
     except Exception as e:
         st.error(f"Error al cargar los datos: {e}")
         st.stop()
@@ -151,19 +175,39 @@ def main_app():
     ws_clientes, _, _ = init_google_sheets()
     
     # --- DASHBOARD DE ESTADÍSTICAS ---
-    mostrar_estadisticas(df_completo, df_mapa, reclamos_activos)
+    mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos)
     
     # --- SIDEBAR Filtros ---
     st.sidebar.header("Filtros y Búsqueda")
+    
+    # 1. Filtro por Sector
     sectores_disponibles = sorted(df_completo['sector'].dropna().unique().tolist())
     sector_seleccionado = st.sidebar.selectbox("Filtrar por Sector", ["Todos"] + sectores_disponibles)
+    
+    # ========================================================
+    # NUEVO: Filtro por Estado de Reclamo
+    # ========================================================
+    filtro_reclamo = st.sidebar.radio(
+        "Filtrar por Reclamo",
+        ["Todos", "🟢 Sin Reclamos", "🔴 Con Reclamos (En Curso/Pend.)"]
+    )
+    
+    # 3. Búsqueda
     id_busqueda = st.sidebar.text_input("🔍 Buscar Nº de Cliente")
     
     df_filtrado = df_mapa.copy()
     
+    # Aplicar filtro de sector
     if sector_seleccionado != "Todos":
         df_filtrado = df_filtrado[df_filtrado['sector'] == sector_seleccionado]
+    
+    # Aplicar filtro de reclamo
+    if filtro_reclamo == "🟢 Sin Reclamos":
+        df_filtrado = df_filtrado[df_filtrado['color'] == 'green']
+    elif filtro_reclamo == "🔴 Con Reclamos (En Curso/Pend.)":
+        df_filtrado = df_filtrado[df_filtrado['color'] == 'red']
         
+    # Aplicar filtro de búsqueda
     cliente_encontrado = None
     mensaje_estado = ""
     
@@ -213,7 +257,6 @@ def main_app():
                         cell = ws_clientes.find(st.session_state.found_id)
                         if cell:
                             fila = cell.row
-                            # Punto 1.5: Escritura batch
                             ws_clientes.update(
                                 values=[[st.session_state.found_lat, st.session_state.found_lon]],
                                 range_name=f'J{fila}:K{fila}'
@@ -236,10 +279,9 @@ def main_app():
             centro = [df_filtrado.iloc[0]['lat'], df_filtrado.iloc[0]['lon']]
             zoom = 16
         else:
-            centro = [OFICINA_LAT, OFICINA_LON] # 📍 Ubicación de tu oficina
+            centro = [OFICINA_LAT, OFICINA_LON] 
             zoom = ZOOM_INICIAL
             
-        # Punto 2.3: Capas Múltiples y Mapa de Calor
         m = folium.Map(location=centro, zoom_start=zoom, tiles=None)
         
         # 1. Capas Base de Mapa
@@ -247,7 +289,7 @@ def main_app():
         folium.TileLayer('CartoDB positron', name='⚪ Mapa Claro').add_to(m)
         folium.TileLayer('CartoDB dark_matter', name='⚫ Mapa Oscuro').add_to(m)
         
-        # 2. Grupos de Capas (Para prender/apagar marcadores)
+        # 2. Grupos de Capas 
         marker_cluster = MarkerCluster(name="Todos los Clientes", show=True).add_to(m)
         
         fg_verde = FeatureGroupSubGroup(marker_cluster, name='🟢 Sin Reclamos')
@@ -267,9 +309,8 @@ def main_app():
             icon=folium.Icon(color='black', icon='building', prefix='fa')
         ).add_to(m)
 
-        # 4. Agregar Marcadores de Clientes (Popups mejorados a pantalla completa)
+        # 4. Agregar Marcadores de Clientes
         for idx, row in df_filtrado.iterrows():
-            # Preparar links de acción directa
             gmaps_link = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
             telefono_limpio = str(row['telefono']).replace('-', '').replace(' ', '')
             if telefono_limpio and telefono_limpio != 'nan':
@@ -286,8 +327,7 @@ def main_app():
             else:
                 btn_whatsapp = ""
 
-            # Determinar estado de reclamo para el popup
-            estado_reclamo = "🔴 CON RECLAMO PENDIENTE" if row['color'] == 'red' else "🟢 SIN RECLAMO"
+            estado_reclamo = "🔴 CON RECLAMO (En Curso/Pend.)" if row['color'] == 'red' else "🟢 SIN RECLAMO"
             
             html_popup = f"""
             <div style="font-family: 'Segoe UI', Arial; min-width: 280px; max-width: 320px;">
@@ -332,10 +372,10 @@ def main_app():
         # 6. Control de Capas
         folium.LayerControl(collapsed=False).add_to(m)
         
-        # MAPA A PANTALLA COMPLETA (Sin return objects para evitar reruns innecesarios que borran el click)
+        # MAPA A PANTALLA COMPLETA (Width al 100%)
         st_folium(m, width="100%", height=750, returned_objects=[])
         
-        st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo pendiente &nbsp;&nbsp; 🏢 Oficina")
+        st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo (En Curso/Pend.) &nbsp;&nbsp; 🏢 Oficina")
         
     else:
         if not id_busqueda:
