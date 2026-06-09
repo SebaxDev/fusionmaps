@@ -352,7 +352,7 @@ def main_app():
         folium.LayerControl(collapsed=True).add_to(m)
         
         # MAPA A PANTALLA COMPLETA
-        st_folium(m, width="100%", height=750, returned_objects=[])
+        st_folium(m, width="100%", height=600, returned_objects=[])
         
         st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo (En Curso/Pend.) &nbsp;&nbsp; 🏢 Oficina")
         
