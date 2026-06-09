@@ -90,23 +90,17 @@ def cargar_datos():
 
     df_reclamos['Nº Cliente'] = df_reclamos['Nº Cliente'].astype(str)
     
-    # ========================================================
-    # MEJORA: Filtrar SOLO "En Curso" y "Pendiente"
-    # ========================================================
+    # Filtrar SOLO "En Curso" y "Pendiente"
     estados_activos = ['En Curso', 'Pendiente']
     mascara_reclamos = df_reclamos['Estado'].isin(estados_activos)
     
-    # Lista de Nº Clientes que tienen reclamos activos (para pintar de rojo)
     reclamos_activos = df_reclamos[mascara_reclamos]['Nº Cliente'].unique()
-    
-    # Cantidad TOTAL de reclamos reales (no cantidad de clientes)
     total_reclamos_activos = df_reclamos[mascara_reclamos].shape[0]
     
     df_mapa['color'] = df_mapa['nro_cliente'].apply(
         lambda x: 'red' if x in reclamos_activos else 'green'
     )
 
-    # Devolvemos las nuevas variables
     return df_c, df_mapa, df_usuarios, df_reclamos, reclamos_activos, total_reclamos_activos
 
 # --- SISTEMA DE LOGIN ---
@@ -132,7 +126,7 @@ def login_screen():
             except Exception as e:
                 st.error(f"Error al cargar datos de usuarios: {e}")
 
-# --- ESTADÍSTICAS (Punto 2.2) ---
+# --- ESTADÍSTICAS ---
 def mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos):
     st.markdown("### 📊 Resumen General")
     col1, col2, col3, col4 = st.columns(4)
@@ -148,7 +142,6 @@ def mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos):
     with col3:
         st.metric("❌ Sin Coordenadas", sin_coords, delta=f"{sin_coords} pendientes", delta_color="inverse")
     with col4:
-        # Ahora muestra la cantidad exacta de reclamos En Curso / Pendientes
         st.metric("🔴 Reclamos Activos", total_reclamos_activos, delta="En Curso / Pendiente", delta_color="inverse")
     st.divider()
 
@@ -174,40 +167,31 @@ def main_app():
 
     ws_clientes, _, _ = init_google_sheets()
     
-    # --- DASHBOARD DE ESTADÍSTICAS ---
     mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos)
     
     # --- SIDEBAR Filtros ---
     st.sidebar.header("Filtros y Búsqueda")
     
-    # 1. Filtro por Sector
     sectores_disponibles = sorted(df_completo['sector'].dropna().unique().tolist())
     sector_seleccionado = st.sidebar.selectbox("Filtrar por Sector", ["Todos"] + sectores_disponibles)
     
-    # ========================================================
-    # NUEVO: Filtro por Estado de Reclamo
-    # ========================================================
     filtro_reclamo = st.sidebar.radio(
         "Filtrar por Reclamo",
         ["Todos", "🟢 Sin Reclamos", "🔴 Con Reclamos (En Curso/Pend.)"]
     )
     
-    # 3. Búsqueda
     id_busqueda = st.sidebar.text_input("🔍 Buscar Nº de Cliente")
     
     df_filtrado = df_mapa.copy()
     
-    # Aplicar filtro de sector
     if sector_seleccionado != "Todos":
         df_filtrado = df_filtrado[df_filtrado['sector'] == sector_seleccionado]
     
-    # Aplicar filtro de reclamo
     if filtro_reclamo == "🟢 Sin Reclamos":
         df_filtrado = df_filtrado[df_filtrado['color'] == 'green']
     elif filtro_reclamo == "🔴 Con Reclamos (En Curso/Pend.)":
         df_filtrado = df_filtrado[df_filtrado['color'] == 'red']
         
-    # Aplicar filtro de búsqueda
     cliente_encontrado = None
     mensaje_estado = ""
     
@@ -274,7 +258,6 @@ def main_app():
 
     # --- MAPA PANTALLA COMPLETA ---
     if not df_filtrado.empty:
-        # Si buscaste un cliente, centrar ahí. Si no, centrar en la OFICINA
         if id_busqueda and not df_filtrado.empty:
             centro = [df_filtrado.iloc[0]['lat'], df_filtrado.iloc[0]['lon']]
             zoom = 16
@@ -282,14 +265,10 @@ def main_app():
             centro = [OFICINA_LAT, OFICINA_LON] 
             zoom = ZOOM_INICIAL
             
-        # Al poner 'OpenStreetMap' aquí, ES el mapa que carga por defecto
-        m = folium.Map(location=centro, zoom_start=zoom, tiles='OpenStreetMap')
+        # Mapa Estándar fijo
+        m = folium.Map(location=centro, zoom_start=zoom)
         
-        # 1. Capas Base de Mapa Alternativas
-        folium.TileLayer('CartoDB positron', name='⚪ Mapa Claro').add_to(m)
-        folium.TileLayer('CartoDB dark_matter', name='⚫ Mapa Oscuro').add_to(m)
-        
-        # 2. Grupos de Capas 
+        # Grupos de Capas para los marcadores y heatmap
         marker_cluster = MarkerCluster(name="Todos los Clientes", show=True).add_to(m)
         
         fg_verde = FeatureGroupSubGroup(marker_cluster, name='🟢 Sin Reclamos')
@@ -301,7 +280,7 @@ def main_app():
         fg_heat = folium.FeatureGroup(name='🔥 Mapa de Calor (Reclamos)', show=False)
         m.add_child(fg_heat)
         
-        # 3. Marcador de la Oficina
+        # Marcador de la Oficina
         folium.Marker(
             location=[OFICINA_LAT, OFICINA_LON],
             popup="<b>🏢 Oficina Fusion</b>",
@@ -309,7 +288,7 @@ def main_app():
             icon=folium.Icon(color='black', icon='building', prefix='fa')
         ).add_to(m)
 
-        # 4. Agregar Marcadores de Clientes
+        # Agregar Marcadores de Clientes
         for idx, row in df_filtrado.iterrows():
             gmaps_link = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
             telefono_limpio = str(row['telefono']).replace('-', '').replace(' ', '')
@@ -364,16 +343,16 @@ def main_app():
                 icon=folium.Icon(color=row['color'], icon='user', prefix='fa')
             ).add_to(target_group)
         
-        # 5. Mapa de Calor 
+        # Mapa de Calor 
         reclamos_coords = df_filtrado[df_filtrado['color'] == 'red'][['lat', 'lon']].values.tolist()
         if reclamos_coords:
             HeatMap(reclamos_coords, radius=15, blur=20, max_zoom=13).add_to(fg_heat)
         
-        # 6. Control de Capas
-        folium.LayerControl(collapsed=False).add_to(m)
+        # Control de capas (Solo para mostrar/ocultar reclamos y heatmap, el mapa base queda fijo)
+        folium.LayerControl(collapsed=True).add_to(m)
         
-        # MAPA A PANTALLA COMPLETA (Width al 100%)
-        st_folium(m, width="100%", height=600, returned_objects=[])
+        # MAPA A PANTALLA COMPLETA
+        st_folium(m, width="100%", height=750, returned_objects=[])
         
         st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo (En Curso/Pend.) &nbsp;&nbsp; 🏢 Oficina")
         
