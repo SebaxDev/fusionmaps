@@ -282,10 +282,10 @@ def main_app():
             centro = [OFICINA_LAT, OFICINA_LON] 
             zoom = ZOOM_INICIAL
             
-        m = folium.Map(location=centro, zoom_start=zoom, tiles=None)
+        # Al poner 'OpenStreetMap' aquí, ES el mapa que carga por defecto
+        m = folium.Map(location=centro, zoom_start=zoom, tiles='OpenStreetMap')
         
-        # 1. Capas Base de Mapa
-        folium.TileLayer('OpenStreetMap', name='🗺️ Mapa Estándar').add_to(m)
+        # 1. Capas Base de Mapa Alternativas
         folium.TileLayer('CartoDB positron', name='⚪ Mapa Claro').add_to(m)
         folium.TileLayer('CartoDB dark_matter', name='⚫ Mapa Oscuro').add_to(m)
         
