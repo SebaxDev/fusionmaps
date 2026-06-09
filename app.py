@@ -19,10 +19,10 @@ WORKSHEET_CLIENTES = "Clientes"
 WORKSHEET_RECLAMOS = "Reclamos"
 WORKSHEET_USUARIOS = "usuarios"
 
-# 📍 UBICACIÓN DE TU OFICINA (Nuevo punto 2.3 / Ajuste de vista)
+# 📍 UBICACIÓN DE TU OFICINA
 OFICINA_LAT = -26.538165
 OFICINA_LON = -59.341487
-ZOOM_INICIAL = 15  # Zoom de cerca (12 era muy lejos, 15 es nivel de calles)
+ZOOM_INICIAL = 15  # Zoom de cerca (nivel de calles)
 
 # --- CONEXIÓN CON GOOGLE SHEETS ---
 SCOPES = [
@@ -83,7 +83,6 @@ def cargar_datos():
         lambda x: 'red' if x in reclamos_activos else 'green'
     )
 
-    # Devolvemos también df_reclamos completo para el panel de detalle
     return df_c, df_mapa, df_usuarios, df_reclamos, reclamos_activos
 
 # --- SISTEMA DE LOGIN ---
@@ -109,9 +108,7 @@ def login_screen():
             except Exception as e:
                 st.error(f"Error al cargar datos de usuarios: {e}")
 
-# ========================================================
-# NUEVO: Panel de Estadísticas (Punto 2.2)
-# ========================================================
+# --- ESTADÍSTICAS (Punto 2.2) ---
 def mostrar_estadisticas(df_completo, df_mapa, reclamos_activos):
     st.markdown("### 📊 Resumen General")
     col1, col2, col3, col4 = st.columns(4)
@@ -130,37 +127,6 @@ def mostrar_estadisticas(df_completo, df_mapa, reclamos_activos):
     with col4:
         st.metric("🔴 Reclamos Activos", total_reclamos, delta=None if total_reclamos == 0 else "Requiere atención", delta_color="inverse")
     st.divider()
-
-# ========================================================
-# NUEVO: Panel de Detalle Lateral (Punto 2.1)
-# ========================================================
-def mostrar_panel_detalle(cliente, df_reclamos):
-    st.subheader(f"📋 {cliente['nombre']}")
-    st.markdown(f"**Nº Cliente:** {cliente['nro_cliente']}")
-    st.markdown(f"**Sector:** {cliente['sector']}")
-    st.markdown(f"**Dirección:** {cliente['direccion']}")
-    st.markdown(f"**Teléfono:** {cliente['telefono']}")
-    st.markdown(f"**Precinto:** {cliente['precinto']}")
-    st.markdown(f"**Últ. Modificación:** {cliente.get('ult_mod', 'N/A')}")
-    
-    st.divider()
-    st.subheader("📝 Anotaciones")
-    anotacion = str(cliente.get('anotaciones', ''))
-    st.info(anotacion if anotacion and anotacion != 'nan' else "Sin anotaciones registradas.")
-    
-    st.divider()
-    st.subheader("🔧 Historial de Reclamos")
-    # Buscar los reclamos de este cliente
-    reclamos_cliente = df_reclamos[df_reclamos['Nº Cliente'] == str(cliente['nro_cliente'])]
-    
-    if not reclamos_cliente.empty:
-        # Mostrar como una lista visual en lugar de tabla para ahorrar espacio lateral
-        for _, r in reclamos_cliente.iterrows():
-            estado = r.get('Estado', 'Desconocido')
-            icono = "🔴" if estado != "Resuelto" else "✅"
-            st.markdown(f"{icono} **{r.get('Motivo', r.get('Descripción', 'Sin detalle'))}** - *Estado: {estado}*")
-    else:
-        st.success("✅ Sin reclamos registrados.")
 
 # --- APLICACIÓN PRINCIPAL ---
 def main_app():
@@ -184,7 +150,7 @@ def main_app():
 
     ws_clientes, _, _ = init_google_sheets()
     
-    # --- DASHBOARD DE ESTADÍSTICAS (Punto 2.2) ---
+    # --- DASHBOARD DE ESTADÍSTICAS ---
     mostrar_estadisticas(df_completo, df_mapa, reclamos_activos)
     
     # --- SIDEBAR Filtros ---
@@ -247,10 +213,7 @@ def main_app():
                         cell = ws_clientes.find(st.session_state.found_id)
                         if cell:
                             fila = cell.row
-                            
-                            # ========================================================
-                            # MEJORA Punto 1.5: Escritura batch (1 sola llamada API)
-                            # ========================================================
+                            # Punto 1.5: Escritura batch
                             ws_clientes.update(
                                 values=[[st.session_state.found_lat, st.session_state.found_lon]],
                                 range_name=f'J{fila}:K{fila}'
@@ -266,115 +229,119 @@ def main_app():
                     except Exception as e:
                         st.sidebar.error(f"Error al guardar: {e}")
 
-    # --- LAYOUT PRINCIPAL: Mapa y Panel de Detalle ---
-    # Creamos 2 columnas: 75% para el mapa, 25% para el panel de detalle (Punto 2.1)
-    col_mapa, col_detalle = st.columns([3, 1], gap="small")
-
-    with col_mapa:
-        if not df_filtrado.empty:
-            # Si buscaste un cliente, centrar ahí. Si no, centrar en la OFICINA
-            if id_busqueda and not df_filtrado.empty:
-                centro = [df_filtrado.iloc[0]['lat'], df_filtrado.iloc[0]['lon']]
-                zoom = 16
-            else:
-                centro = [OFICINA_LAT, OFICINA_LON] # 📍 Ubicación de tu oficina
-                zoom = ZOOM_INICIAL
-                
-            # ========================================================
-            # MEJORA Punto 2.3: Capas Múltiples y Mapa de Calor
-            # ========================================================
-            m = folium.Map(location=centro, zoom_start=zoom, tiles=None)
-            
-            # 1. Capas Base de Mapa (Tiles)
-            folium.TileLayer('OpenStreetMap', name='🗺️ Mapa Estándar').add_to(m)
-            folium.TileLayer('CartoDB positron', name='⚪ Mapa Claro').add_to(m)
-            folium.TileLayer('CartoDB dark_matter', name='⚫ Mapa Oscuro').add_to(m)
-            
-            # 2. Grupos de Capas (Para prender/apagar marcadores)
-            marker_cluster = MarkerCluster(name="Todos los Clientes", show=True).add_to(m)
-            
-            fg_verde = FeatureGroupSubGroup(marker_cluster, name='🟢 Sin Reclamos')
-            m.add_child(fg_verde)
-            
-            fg_rojo = FeatureGroupSubGroup(marker_cluster, name='🔴 Con Reclamos')
-            m.add_child(fg_rojo)
-            
-            fg_heat = folium.FeatureGroup(name='🔥 Mapa de Calor (Reclamos)', show=False)
-            m.add_child(fg_heat)
-            
-            # 3. Marcador de la Oficina (Para que siempre sepas dónde estás parado)
-            folium.Marker(
-                location=[OFICINA_LAT, OFICINA_LON],
-                popup="<b>🏢 Oficina Fusion</b>",
-                tooltip="Mi Oficina",
-                icon=folium.Icon(color='black', icon='building', prefix='fa')
-            ).add_to(m)
-
-            # 4. Agregar Marcadores de Clientes
-            for idx, row in df_filtrado.iterrows():
-                html_popup = f"""
-                <div style="font-family: Arial; min-width: 200px;">
-                    <h4 style="margin:0 0 5px 0;">{row['nombre']}</h4>
-                    <b>Nº Cliente:</b> {row['nro_cliente']}<br>
-                    <b>Dirección:</b> {row['direccion']}<br>
-                    <b>Teléfono:</b> {row['telefono']}<br>
-                    <b>Precinto:</b> {row['precinto']}<br>
-                </div>
-                """
-                
-                target_group = fg_rojo if row['color'] == 'red' else fg_verde
-                
-                # Simplificamos el tooltip para poder leerlo fácilmente en el panel lateral
-                folium.Marker(
-                    location=[row['lat'], row['lon']],
-                    popup=folium.Popup(html_popup, max_width=300),
-                    tooltip=row['nro_cliente'], 
-                    icon=folium.Icon(color=row['color'], icon='user', prefix='fa')
-                ).add_to(target_group)
-            
-            # 5. Mapa de Calor (Solo con los clientes rojos/pendientes)
-            reclamos_coords = df_filtrado[df_filtrado['color'] == 'red'][['lat', 'lon']].values.tolist()
-            if reclamos_coords:
-                HeatMap(reclamos_coords, radius=15, blur=20, max_zoom=13).add_to(fg_heat)
-            
-            # 6. Control de Capas (El menú para prender/apagar)
-            folium.LayerControl(collapsed=False).add_to(m)
-            
-            # Capturamos el click en el mapa (Punto 2.1)
-            map_data = st_folium(m, width=900, height=650, returned_objects=["last_object_clicked"])
-            
-            st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo pendiente &nbsp;&nbsp; 🏢 Oficina")
-            
+    # --- MAPA PANTALLA COMPLETA ---
+    if not df_filtrado.empty:
+        # Si buscaste un cliente, centrar ahí. Si no, centrar en la OFICINA
+        if id_busqueda and not df_filtrado.empty:
+            centro = [df_filtrado.iloc[0]['lat'], df_filtrado.iloc[0]['lon']]
+            zoom = 16
         else:
-            map_data = None
-            if not id_busqueda:
-                st.warning("No hay clientes con coordenadas para el filtro seleccionado.")
-            elif id_busqueda and cliente_encontrado is not None and (pd.isna(cliente_encontrado['lat']) or pd.isna(cliente_encontrado['lon'])):
-                st.info("ℹ️ Este cliente no se muestra en el mapa porque no tiene coordenadas. Usá el asistente en el menú de la izquierda.")
-
-    # ========================================================
-    # Punto 2.1: Panel de Detalle Lateral
-    # ========================================================
-    with col_detalle:
-        st.subheader("Detalle de Cliente")
+            centro = [OFICINA_LAT, OFICINA_LON] # 📍 Ubicación de tu oficina
+            zoom = ZOOM_INICIAL
+            
+        # Punto 2.3: Capas Múltiples y Mapa de Calor
+        m = folium.Map(location=centro, zoom_start=zoom, tiles=None)
         
-        # Verificamos si el usuario hizo click en un marcador
-        if map_data and map_data.get("last_object_clicked"):
-            tooltip_clickeado = map_data["last_object_clicked"].get("tooltip")
-            
-            # Si el click fue en un cliente (tiene Nº de cliente de tooltip) y no en la oficina
-            if tooltip_clickeado and tooltip_clickeado != "Mi Oficina":
-                cliente_sel = df_completo[df_completo['nro_cliente'] == tooltip_clickeado]
-                if not cliente_sel.empty:
-                    mostrar_panel_detalle(cliente_sel.iloc[0], df_reclamos)
-                else:
-                    st.info("Hacé clic en un marcador del mapa para ver sus detalles aquí.")
-            elif tooltip_clickeado == "Mi Oficina":
-                st.markdown("🏢 **Estás en la oficina central.**")
+        # 1. Capas Base de Mapa
+        folium.TileLayer('OpenStreetMap', name='🗺️ Mapa Estándar').add_to(m)
+        folium.TileLayer('CartoDB positron', name='⚪ Mapa Claro').add_to(m)
+        folium.TileLayer('CartoDB dark_matter', name='⚫ Mapa Oscuro').add_to(m)
+        
+        # 2. Grupos de Capas (Para prender/apagar marcadores)
+        marker_cluster = MarkerCluster(name="Todos los Clientes", show=True).add_to(m)
+        
+        fg_verde = FeatureGroupSubGroup(marker_cluster, name='🟢 Sin Reclamos')
+        m.add_child(fg_verde)
+        
+        fg_rojo = FeatureGroupSubGroup(marker_cluster, name='🔴 Con Reclamos')
+        m.add_child(fg_rojo)
+        
+        fg_heat = folium.FeatureGroup(name='🔥 Mapa de Calor (Reclamos)', show=False)
+        m.add_child(fg_heat)
+        
+        # 3. Marcador de la Oficina
+        folium.Marker(
+            location=[OFICINA_LAT, OFICINA_LON],
+            popup="<b>🏢 Oficina Fusion</b>",
+            tooltip="Mi Oficina",
+            icon=folium.Icon(color='black', icon='building', prefix='fa')
+        ).add_to(m)
+
+        # 4. Agregar Marcadores de Clientes (Popups mejorados a pantalla completa)
+        for idx, row in df_filtrado.iterrows():
+            # Preparar links de acción directa
+            gmaps_link = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
+            telefono_limpio = str(row['telefono']).replace('-', '').replace(' ', '')
+            if telefono_limpio and telefono_limpio != 'nan':
+                if not telefono_limpio.startswith('54'):
+                    telefono_limpio = '54' + telefono_limpio
+                whatsapp_link = f"https://wa.me/{telefono_limpio}"
+                btn_whatsapp = f"""
+                    <a href="{whatsapp_link}" target="_blank" 
+                       style="background:#25D366; color:white; padding:5px 10px; 
+                              border-radius:4px; text-decoration:none; font-size:12px;">
+                        💬 WhatsApp
+                    </a>
+                """
             else:
-                st.info("Hacé clic en un marcador del mapa para ver sus detalles aquí.")
-        else:
-            st.info("👆 Hacé clic en un marcador del mapa para ver sus detalles aquí.")
+                btn_whatsapp = ""
+
+            # Determinar estado de reclamo para el popup
+            estado_reclamo = "🔴 CON RECLAMO PENDIENTE" if row['color'] == 'red' else "🟢 SIN RECLAMO"
+            
+            html_popup = f"""
+            <div style="font-family: 'Segoe UI', Arial; min-width: 280px; max-width: 320px;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                            color: white; padding: 10px; border-radius: 8px 8px 0 0; margin: -10px -10px 10px -10px;">
+                    <h4 style="margin:0; font-size:15px;">{row['nombre']}</h4>
+                    <span style="font-size:11px;">{estado_reclamo}</span>
+                </div>
+                <table style="width:100%; font-size:13px; border-collapse:collapse;">
+                    <tr><td style="padding:2px 5px; color:#666; width:40%;">📋 Nº Cliente</td><td><b>{row['nro_cliente']}</b></td></tr>
+                    <tr><td style="padding:2px 5px; color:#666;">📍 Dirección</td><td>{row['direccion']}</td></tr>
+                    <tr><td style="padding:2px 5px; color:#666;">📞 Teléfono</td><td>{row['telefono']}</td></tr>
+                    <tr><td style="padding:2px 5px; color:#666;">🔒 Precinto</td><td>{row['precinto']}</td></tr>
+                    <tr><td style="padding:2px 5px; color:#666;">🏷️ Sector</td><td>{row['sector']}</td></tr>
+                </table>
+                <hr style="margin:8px 0 5px 0">
+                <div style="display:flex; gap:8px; justify-content:center; align-items:center;">
+                    <a href="{gmaps_link}" target="_blank" 
+                       style="background:#4285F4; color:white; padding:5px 10px; 
+                              border-radius:4px; text-decoration:none; font-size:12px;">
+                        🧭 Navegar
+                    </a>
+                    {btn_whatsapp}
+                </div>
+            </div>
+            """
+            
+            target_group = fg_rojo if row['color'] == 'red' else fg_verde
+            
+            folium.Marker(
+                location=[row['lat'], row['lon']],
+                popup=folium.Popup(html_popup, max_width=350),
+                tooltip=f"{row['nombre']} (Nº {row['nro_cliente']})",
+                icon=folium.Icon(color=row['color'], icon='user', prefix='fa')
+            ).add_to(target_group)
+        
+        # 5. Mapa de Calor 
+        reclamos_coords = df_filtrado[df_filtrado['color'] == 'red'][['lat', 'lon']].values.tolist()
+        if reclamos_coords:
+            HeatMap(reclamos_coords, radius=15, blur=20, max_zoom=13).add_to(fg_heat)
+        
+        # 6. Control de Capas
+        folium.LayerControl(collapsed=False).add_to(m)
+        
+        # MAPA A PANTALLA COMPLETA (Sin return objects para evitar reruns innecesarios que borran el click)
+        st_folium(m, height=750, returned_objects=[])
+        
+        st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo pendiente &nbsp;&nbsp; 🏢 Oficina")
+        
+    else:
+        if not id_busqueda:
+            st.warning("No hay clientes con coordenadas para el filtro seleccionado.")
+        elif id_busqueda and cliente_encontrado is not None and (pd.isna(cliente_encontrado['lat']) or pd.isna(cliente_encontrado['lon'])):
+            st.info("ℹ️ Este cliente no se muestra en el mapa porque no tiene coordenadas. Usá el asistente en el menú de la izquierda.")
 
 # --- FLUJO DE EJECUCIÓN ---
 if "authenticated" not in st.session_state:
