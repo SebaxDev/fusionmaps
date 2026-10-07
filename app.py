@@ -30,6 +30,7 @@ SHEET_ID = "13R_3Mdr25Jd-nGhK7CxdcbKkFWLc0LPdYrOLOY8sZJo"
 WORKSHEET_CLIENTES = "Clientes"
 WORKSHEET_RECLAMOS = "Reclamos"
 WORKSHEET_USUARIOS = "usuarios"
+WORKSHEET_CAJAS = "Cajas"
 
 # 📍 UBICACIÓN DE TU OFICINA
 OFICINA_LAT = -26.538165
@@ -54,8 +55,9 @@ def init_google_sheets():
         ws_clientes = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_CLIENTES)
         ws_reclamos = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_RECLAMOS)
         ws_usuarios = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_USUARIOS)
+        ws_cajas = client.open_by_key(SHEET_ID).worksheet(WORKSHEET_CAJAS)
         
-        return ws_clientes, ws_reclamos, ws_usuarios
+        return ws_clientes, ws_reclamos, ws_usuarios, ws_cajas
     except Exception as e:
         st.error(f"Error de conexión con Google Sheets: {e}")
         st.stop()
@@ -63,12 +65,14 @@ def init_google_sheets():
 # --- CARGA Y PROCESAMIENTO DE DATOS ---
 @st.cache_data(ttl=600)
 def cargar_datos():
-    ws_clientes, ws_reclamos, ws_usuarios = init_google_sheets()
+    ws_clientes, ws_reclamos, ws_usuarios, ws_cajas = init_google_sheets()
     
     df_clientes = pd.DataFrame(ws_clientes.get_all_records())
     df_reclamos = pd.DataFrame(ws_reclamos.get_all_records())
     df_usuarios = pd.DataFrame(ws_usuarios.get_all_records())
+    df_cajas_raw = pd.DataFrame(ws_cajas.get_all_records())
     
+    # Procesamiento de Clientes
     rename_dict = {
         'Nº Cliente': 'nro_cliente', 'Sector': 'sector', 'Nombre': 'nombre',
         'Dirección': 'direccion', 'Teléfono': 'telefono', 'N° de Precinto': 'precinto',
@@ -88,9 +92,8 @@ def cargar_datos():
 
     df_mapa = df_c.dropna(subset=['lat', 'lon']).copy()
 
+    # Procesamiento de Reclamos
     df_reclamos['Nº Cliente'] = df_reclamos['Nº Cliente'].astype(str)
-    
-    # Filtrar SOLO "En Curso" y "Pendiente"
     estados_activos = ['En curso', 'Pendiente']
     mascara_reclamos = df_reclamos['Estado'].isin(estados_activos)
     
@@ -101,7 +104,15 @@ def cargar_datos():
         lambda x: 'red' if x in reclamos_activos else 'green'
     )
 
-    return df_c, df_mapa, df_usuarios, df_reclamos, reclamos_activos, total_reclamos_activos
+    # Procesamiento de Cajas
+    df_cajas = df_cajas_raw.copy()
+    df_cajas['Latitud'] = df_cajas['Latitud'].replace(['*', '', ' '], None)
+    df_cajas['Longitud'] = df_cajas['Longitud'].replace(['*', '', ' '], None)
+    df_cajas['Latitud'] = pd.to_numeric(df_cajas['Latitud'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_cajas['Longitud'] = pd.to_numeric(df_cajas['Longitud'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_cajas_mapa = df_cajas.dropna(subset=['Latitud', 'Longitud']).copy()
+
+    return df_c, df_mapa, df_usuarios, df_reclamos, reclamos_activos, total_reclamos_activos, df_cajas_mapa
 
 # --- SISTEMA DE LOGIN ---
 def login_screen():
@@ -115,7 +126,7 @@ def login_screen():
         
         if submit:
             try:
-                _, _, df_usuarios, _, _, _ = cargar_datos()
+                _, _, df_usuarios, _, _, _, _ = cargar_datos()
                 user_row = df_usuarios[(df_usuarios['username'] == username) & (df_usuarios['password'] == password)]
                 if not user_row.empty:
                     st.session_state["authenticated"] = True
@@ -127,27 +138,30 @@ def login_screen():
                 st.error(f"Error al cargar datos de usuarios: {e}")
 
 # --- ESTADÍSTICAS ---
-def mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos):
+def mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos, df_cajas_mapa):
     st.markdown("### 📊 Resumen General")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     total_clientes = len(df_completo)
     con_coords = len(df_mapa)
     sin_coords = total_clientes - con_coords
+    total_cajas = len(df_cajas_mapa)
     
     with col1:
         st.metric("👥 Total Clientes", total_clientes)
     with col2:
-        st.metric("📍 En el Mapa", con_coords)
+        st.metric("📍 Clientes en Mapa", con_coords)
     with col3:
-        st.metric("❌ Sin Coordenadas", sin_coords, delta=f"{sin_coords} pendientes", delta_color="inverse")
+        st.metric("📦 Cajas en Mapa", total_cajas)
     with col4:
+        st.metric("❌ Sin Coordenadas", sin_coords, delta=f"{sin_coords} pendientes", delta_color="inverse")
+    with col5:
         st.metric("🔴 Reclamos Activos", total_reclamos_activos, delta="En Curso / Pendiente", delta_color="inverse")
     st.divider()
 
 # --- APLICACIÓN PRINCIPAL ---
 def main_app():
-    st.title("🗺️ Mapa Interactivo de Clientes - Fusion")
+    st.title("🗺️ Mapa Interactivo de Red y Clientes - Fusion")
     
     with st.sidebar:
         st.write(f"👤 **{st.session_state.user_name}**")
@@ -160,14 +174,14 @@ def main_app():
         st.divider()
 
     try:
-        df_completo, df_mapa, _, df_reclamos, reclamos_activos, total_reclamos_activos = cargar_datos()
+        df_completo, df_mapa, _, df_reclamos, reclamos_activos, total_reclamos_activos, df_cajas_mapa = cargar_datos()
     except Exception as e:
         st.error(f"Error al cargar los datos: {e}")
         st.stop()
 
-    ws_clientes, _, _ = init_google_sheets()
+    ws_clientes, _, _, _ = init_google_sheets()
     
-    mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos)
+    mostrar_estadisticas(df_completo, df_mapa, total_reclamos_activos, df_cajas_mapa)
     
     # --- SIDEBAR Filtros ---
     st.sidebar.header("Filtros y Búsqueda")
@@ -186,6 +200,7 @@ def main_app():
     
     if sector_seleccionado != "Todos":
         df_filtrado = df_filtrado[df_filtrado['sector'] == sector_seleccionado]
+        df_cajas_mapa = df_cajas_mapa[df_cajas_mapa['Sector'].astype(str) == str(sector_seleccionado)]
     
     if filtro_reclamo == "🟢 Sin Reclamos":
         df_filtrado = df_filtrado[df_filtrado['color'] == 'green']
@@ -257,7 +272,7 @@ def main_app():
                         st.sidebar.error(f"Error al guardar: {e}")
 
     # --- MAPA PANTALLA COMPLETA ---
-    if not df_filtrado.empty:
+    if not df_filtrado.empty or not df_cajas_mapa.empty:
         if id_busqueda and not df_filtrado.empty:
             centro = [df_filtrado.iloc[0]['lat'], df_filtrado.iloc[0]['lon']]
             zoom = 16
@@ -265,18 +280,18 @@ def main_app():
             centro = [OFICINA_LAT, OFICINA_LON] 
             zoom = ZOOM_INICIAL
             
-        # Mapa Estándar fijo
         m = folium.Map(location=centro, zoom_start=zoom)
         
-        # Grupos de Capas para los marcadores y heatmap
+        # Grupos de Capas
         marker_cluster = MarkerCluster(name="Todos los Clientes", show=True).add_to(m)
-        
         fg_verde = FeatureGroupSubGroup(marker_cluster, name='🟢 Sin Reclamos')
         m.add_child(fg_verde)
-        
         fg_rojo = FeatureGroupSubGroup(marker_cluster, name='🔴 Con Reclamos')
         m.add_child(fg_rojo)
         
+        fg_cajas = folium.FeatureGroup(name='📦 Cajas NAP y Red', show=True)
+        m.add_child(fg_cajas)
+
         fg_heat = folium.FeatureGroup(name='🔥 Mapa de Calor (Reclamos)', show=False)
         m.add_child(fg_heat)
         
@@ -288,7 +303,65 @@ def main_app():
             icon=folium.Icon(color='black', icon='building', prefix='fa')
         ).add_to(m)
 
-        # Agregar Marcadores de Clientes
+        # 1. AGREGAR CAJAS NAP Y DIBUJAR "HILO CONDUCTOR"
+        for _, row_caja in df_cajas_mapa.iterrows():
+            caja_lat = row_caja['Latitud']
+            caja_lon = row_caja['Longitud']
+            caja_num = str(row_caja.get('N De Caja', ''))
+            
+            # Construir la lista de puertos para el popup y dibujar líneas
+            puertos_html = ""
+            for i in range(1, 17):
+                p_val = str(row_caja.get(f'Precinto {i}', '')).strip()
+                if p_val and p_val not in ('nan', 'None'):
+                    cliente_match = df_completo[df_completo['precinto'].astype(str).str.strip() == p_val]
+                    
+                    if not cliente_match.empty:
+                        cli_nombre = str(cliente_match.iloc[0]['nombre'])
+                        cli_nro = str(cliente_match.iloc[0]['nro_cliente'])
+                        cli_lat = cliente_match.iloc[0]['lat']
+                        cli_lon = cliente_match.iloc[0]['lon']
+                        
+                        puertos_html += f"<tr><td style='padding:2px; font-size:11px; border-bottom:1px solid #ddd;'><b>P{i}</b>: {p_val}</td><td style='padding:2px; font-size:11px; color:#444; border-bottom:1px solid #ddd;'>#{cli_nro} - {cli_nombre[:18]}</td></tr>"
+                        
+                        # Dibujar el "Hilo Conductor" de la caja al cliente
+                        if pd.notna(cli_lat) and pd.notna(cli_lon):
+                            folium.PolyLine(
+                                locations=[[caja_lat, caja_lon], [cli_lat, cli_lon]],
+                                color='#8A2BE2', # Color violeta para la fibra
+                                weight=2,
+                                opacity=0.6,
+                                dash_array='5, 5',
+                                tooltip=f"Cable: Caja {caja_num} ➡️ Cliente {cli_nro}"
+                            ).add_to(fg_cajas)
+                    else:
+                        puertos_html += f"<tr><td style='padding:2px; font-size:11px; border-bottom:1px solid #ddd;'><b>P{i}</b>: {p_val}</td><td style='padding:2px; font-size:11px; color:red; border-bottom:1px solid #ddd;'>Sin datos en sistema</td></tr>"
+            
+            if not puertos_html:
+                puertos_html = "<tr><td style='font-size:12px; color:#666; padding:5px;'>Todos los puertos libres</td></tr>"
+
+            html_popup_caja = f"""
+            <div style="font-family: 'Segoe UI', Arial; min-width: 250px; max-width: 320px;">
+                <div style="background: #2c3e50; color: white; padding: 10px; border-radius: 8px 8px 0 0; margin: -10px -10px 10px -10px;">
+                    <h4 style="margin:0; font-size:15px;">📦 Caja NAP {caja_num}</h4>
+                    <span style="font-size:11px;">Splitter: {row_caja.get('Splitter', '')} | Sector: {row_caja.get('Sector', '')}</span>
+                </div>
+                <div style="max-height: 200px; overflow-y: auto;">
+                    <table style="width:100%; border-collapse:collapse;">
+                        {puertos_html}
+                    </table>
+                </div>
+            </div>
+            """
+            
+            folium.Marker(
+                location=[caja_lat, caja_lon],
+                popup=folium.Popup(html_popup_caja, max_width=350),
+                tooltip=f"Caja NAP {caja_num}",
+                icon=folium.Icon(color='purple', icon='server', prefix='fa')
+            ).add_to(fg_cajas)
+
+        # 2. AGREGAR MARCADORES DE CLIENTES
         for idx, row in df_filtrado.iterrows():
             gmaps_link = f"https://www.google.com/maps/dir/?api=1&destination={row['lat']},{row['lon']}"
             telefono_limpio = str(row['telefono']).replace('-', '').replace(' ', '')
@@ -348,19 +421,16 @@ def main_app():
         if reclamos_coords:
             HeatMap(reclamos_coords, radius=15, blur=20, max_zoom=13).add_to(fg_heat)
         
-        # Control de capas (Solo para mostrar/ocultar reclamos y heatmap, el mapa base queda fijo)
+        # Control de capas (Mostrar/ocultar reclamos, cajas/red y heatmap)
         folium.LayerControl(collapsed=True).add_to(m)
         
         # MAPA A PANTALLA COMPLETA
         st_folium(m, width="100%", height=600, returned_objects=[])
         
-        st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo (En Curso/Pend.) &nbsp;&nbsp; 🏢 Oficina")
+        st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo &nbsp;&nbsp; 🏢 Oficina &nbsp;&nbsp; 📦 Cajas NAP y Fibra (Línea Violeta)")
         
     else:
-        if not id_busqueda:
-            st.warning("No hay clientes con coordenadas para el filtro seleccionado.")
-        elif id_busqueda and cliente_encontrado is not None and (pd.isna(cliente_encontrado['lat']) or pd.isna(cliente_encontrado['lon'])):
-            st.info("ℹ️ Este cliente no se muestra en el mapa porque no tiene coordenadas. Usá el asistente en el menú de la izquierda.")
+        st.warning("No hay datos geolocalizados para mostrar en el mapa.")
 
 # --- FLUJO DE EJECUCIÓN ---
 if "authenticated" not in st.session_state:
