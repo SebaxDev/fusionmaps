@@ -289,7 +289,7 @@ def main_app():
         fg_rojo = FeatureGroupSubGroup(marker_cluster, name='🔴 Con Reclamos')
         m.add_child(fg_rojo)
         
-        fg_cajas = folium.FeatureGroup(name='📦 Cajas NAP y Red', show=True)
+        fg_cajas = folium.FeatureGroup(name='📦 Cajas NAP', show=True)
         m.add_child(fg_cajas)
 
         fg_heat = folium.FeatureGroup(name='🔥 Mapa de Calor (Reclamos)', show=False)
@@ -303,13 +303,13 @@ def main_app():
             icon=folium.Icon(color='black', icon='building', prefix='fa')
         ).add_to(m)
 
-        # 1. AGREGAR CAJAS NAP Y DIBUJAR "HILO CONDUCTOR"
+        # 1. AGREGAR CAJAS NAP (MARCADORES CIRCULARES COMPACTOS)
         for _, row_caja in df_cajas_mapa.iterrows():
             caja_lat = row_caja['Latitud']
             caja_lon = row_caja['Longitud']
             caja_num = str(row_caja.get('N De Caja', ''))
             
-            # Construir la lista de puertos para el popup y dibujar líneas
+            # Construir la lista de puertos para el popup
             puertos_html = ""
             for i in range(1, 17):
                 p_val = str(row_caja.get(f'Precinto {i}', '')).strip()
@@ -319,21 +319,8 @@ def main_app():
                     if not cliente_match.empty:
                         cli_nombre = str(cliente_match.iloc[0]['nombre'])
                         cli_nro = str(cliente_match.iloc[0]['nro_cliente'])
-                        cli_lat = cliente_match.iloc[0]['lat']
-                        cli_lon = cliente_match.iloc[0]['lon']
                         
                         puertos_html += f"<tr><td style='padding:2px; font-size:11px; border-bottom:1px solid #ddd;'><b>P{i}</b>: {p_val}</td><td style='padding:2px; font-size:11px; color:#444; border-bottom:1px solid #ddd;'>#{cli_nro} - {cli_nombre[:18]}</td></tr>"
-                        
-                        # Dibujar el "Hilo Conductor" de la caja al cliente
-                        if pd.notna(cli_lat) and pd.notna(cli_lon):
-                            folium.PolyLine(
-                                locations=[[caja_lat, caja_lon], [cli_lat, cli_lon]],
-                                color='#8A2BE2', # Color violeta para la fibra
-                                weight=2,
-                                opacity=0.6,
-                                dash_array='5, 5',
-                                tooltip=f"Cable: Caja {caja_num} ➡️ Cliente {cli_nro}"
-                            ).add_to(fg_cajas)
                     else:
                         puertos_html += f"<tr><td style='padding:2px; font-size:11px; border-bottom:1px solid #ddd;'><b>P{i}</b>: {p_val}</td><td style='padding:2px; font-size:11px; color:red; border-bottom:1px solid #ddd;'>Sin datos en sistema</td></tr>"
             
@@ -354,11 +341,17 @@ def main_app():
             </div>
             """
             
-            folium.Marker(
+            # Usar CircleMarker en lugar de Marker normal para que sea más compacto
+            folium.CircleMarker(
                 location=[caja_lat, caja_lon],
+                radius=8,
+                color='white',
+                weight=2,
+                fill=True,
+                fill_color='#8A2BE2', # Violeta oscuro
+                fill_opacity=0.9,
                 popup=folium.Popup(html_popup_caja, max_width=350),
-                tooltip=f"Caja NAP {caja_num}",
-                icon=folium.Icon(color='purple', icon='server', prefix='fa')
+                tooltip=f"📦 Caja NAP {caja_num}"
             ).add_to(fg_cajas)
 
         # 2. AGREGAR MARCADORES DE CLIENTES
@@ -427,7 +420,7 @@ def main_app():
         # MAPA A PANTALLA COMPLETA
         st_folium(m, width="100%", height=600, returned_objects=[])
         
-        st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo &nbsp;&nbsp; 🏢 Oficina &nbsp;&nbsp; 📦 Cajas NAP y Fibra (Línea Violeta)")
+        st.markdown("**Leyenda:** 🟢 Sin reclamos &nbsp;&nbsp; 🔴 Con reclamo &nbsp;&nbsp; 🏢 Oficina &nbsp;&nbsp; 🟣 Cajas NAP")
         
     else:
         st.warning("No hay datos geolocalizados para mostrar en el mapa.")
